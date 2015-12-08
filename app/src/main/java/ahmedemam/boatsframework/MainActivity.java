@@ -22,6 +22,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -32,11 +33,15 @@ import java.net.SocketException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Scanner;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import ahmedemam.boatsframework.model.Packet;
 
 
 /**
  * Things to DO
- *  -  Figure out if I am on adhoc mode or not, and if not connect to adhoc mode
+ *  -  Figure out if I am on adhoc mode or not (DONE), and if not connect to adhoc mode
  */
 
 public class MainActivity extends AppCompatActivity {
@@ -81,13 +86,15 @@ public class MainActivity extends AppCompatActivity {
     Handler activitiesCommHandler;
     Handler timedTasks;
 
-    static ConnectionThread[] connectionThreads = new ConnectionThread[MAX_CONNECTIONS];
+    //    static ConnectionThread[] connectionThreads = new ConnectionThread[MAX_CONNECTIONS];
+    static WorkingThread[] connectionThreads = new WorkingThread[MAX_CONNECTIONS];
+
 
     public static int DEVICE_ID = 0;                                   //This device's ID
     private static FileOutputStream logfile;
     public static String rootDir = Environment.getExternalStorageDirectory().toString() + "/MobiBots/boatsFramework/";
     private WifiAdhocServerThread serverThread;
-    private ConnectionThread otherConnection;
+//    private ConnectionThread otherConnection;
     public DatagramSocket broadcastSocket = null;
 
 
@@ -187,8 +194,9 @@ public class MainActivity extends AppCompatActivity {
      * @param node  nodeID
      */
     public synchronized void removeNode(int node){
+        debug("Disconnecting from "+node);
         try{
-            Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+
 
             if(alarmRingtone.isPlaying())
                 alarmRingtone.stop();
@@ -202,14 +210,33 @@ public class MainActivity extends AppCompatActivity {
         connectionThreads[node-1] = null;
     }
 
+//    /**
+//     * Synchronized function to remove the thread responsible for communication with nodeID "node"
+//     * @param node  nodeID
+//     */
+//    public synchronized void removeNode(int node){
+//        try{
+//            Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+//
+//            if(alarmRingtone.isPlaying())
+//                alarmRingtone.stop();
+//            alarmRingtone.play();
+//            timedTasks.postDelayed(stopAlarm, 4000);
+//        }
+//        catch (Exception e){
+//            e.printStackTrace();
+//        }
+//
+//        connectionThreads[node-1] = null;
+//    }
 
     /**
      * Synchronized function to add the thread responsible for communication with nodeID "node"
      * @param thread    Communication thread
      * @param node      nodeID
      */
-    public synchronized void addNode(ConnectionThread thread,int node){
-
+    public synchronized void addNode(WorkingThread thread,int node){
+        debug("Connecting to"+node);
         try{
             Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
             Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), notification);
@@ -221,6 +248,26 @@ public class MainActivity extends AppCompatActivity {
         }
         connectionThreads[node-1] = thread;
     }
+
+
+//    /**
+//     * Synchronized function to add the thread responsible for communication with nodeID "node"
+//     * @param thread    Communication thread
+//     * @param node      nodeID
+//     */
+//    public synchronized void addNode(ConnectionThread thread,int node){
+//
+//        try{
+//            Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+//            Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), notification);
+//            r.play();
+//
+//        }
+//        catch (Exception e){
+//            e.printStackTrace();
+//        }
+//        connectionThreads[node-1] = thread;
+//    }
 
     Runnable startAdvertising = new Runnable() {
         @Override
@@ -332,7 +379,7 @@ public class MainActivity extends AppCompatActivity {
      * @param v
      */
     public void send_file_to_device(View v) {
-        otherConnection.stopStream();
+//        otherConnection.stopStream();
 //        EditText deviceIDEdit = (EditText) findViewById(R.id.device_ID);
 //        String deviceID = deviceIDEdit.getText().toString();
 
@@ -343,6 +390,27 @@ public class MainActivity extends AppCompatActivity {
 //        otherConnection.sendFile(device, filename);
 
     }
+
+
+    public void startCommunicationThreads(int nodeID, boolean client,
+                                          InputStream inputStream, OutputStream outputStream,
+                                          MainActivity mainActivity){
+        BlockingQueue<Packet> incomingPackets = new LinkedBlockingQueue<>();
+        BlockingQueue<Packet> outgoingPackets = new LinkedBlockingQueue<>();
+
+        ReadingThread readingThread = new ReadingThread(incomingPackets, inputStream, nodeID,
+                mainActivity);
+        WorkingThread workingThread = new WorkingThread(incomingPackets, outgoingPackets, nodeID,
+                mainActivity);
+        WritingThread writingThread = new WritingThread(outgoingPackets, outputStream, nodeID);
+
+        readingThread.start();
+        workingThread.start();
+        writingThread.start();
+
+        addNode(workingThread, nodeID);
+    }
+
 
     public class WifiAdhocServerThread extends Thread {
         ServerSocket serverSocket = null;
@@ -372,11 +440,8 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "Connected to Local Address: " + client.getLocalAddress().getHostAddress());
 
                     int deviceId = findDevice_IpAddress(client.getInetAddress().getHostAddress());
-                    otherConnection = new ConnectionThread(mainActivity, client.getInputStream(),
-                            client.getOutputStream(), false, deviceId);
-                    otherConnection.start();
-                    addNode(otherConnection, deviceId);
-
+                    startCommunicationThreads(deviceId, true,
+                            client.getInputStream(), client.getOutputStream(), mainActivity);
 
                 } catch (IOException e) {
                     Log.e(TAG, e.getMessage());
@@ -401,6 +466,8 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
+
+
     public class WifiAdhocClientThread extends Thread {
         String hostAddress;
         DataInputStream inputStream;
@@ -428,11 +495,13 @@ public class MainActivity extends AppCompatActivity {
                 debug("Connecting to " + device_Id + " @ " + hostAddress);
                 socket.bind(null);
                 socket.connect((new InetSocketAddress(hostAddress, port)), 5000);
+                startCommunicationThreads(device_Id, true,
+                        socket.getInputStream(), socket.getOutputStream(), mainActivity);
 
-                otherConnection = new ConnectionThread(mainActivity, socket.getInputStream(),
-                        socket.getOutputStream(), true, device_Id);
-                otherConnection.start();
-                addNode(otherConnection, device_Id);
+//                otherConnection = new ConnectionThread(mainActivity, socket.getInputStream(),
+//                        socket.getOutputStream(), true, device_Id);
+//                otherConnection.start();
+//                addNode(otherConnection, device_Id);
 
             } catch (IOException e) {
                 e.printStackTrace();

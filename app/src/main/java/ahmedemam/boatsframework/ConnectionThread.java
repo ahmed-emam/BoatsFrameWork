@@ -97,7 +97,7 @@ public class ConnectionThread extends Thread{
 //        Looper.prepare();
 //        Looper.loop();
 //        handler = new Handler();
-     
+
 //        handler.postDelayed(sendHeartBeat, 1000);
 
 //        if(!isClient){
@@ -253,10 +253,8 @@ public class ConnectionThread extends Thread{
      */
     public void sendHeartBeat() {
         mainActivity.debug("Sending Heart-Beat");
-
         Packet packet = new Packet(MainActivity.DEVICE_ID, deviceID, HEARTBEAT, 0, new byte[1]);
         sendPacket(packet);
-
     }
 
 //    Runnable sendHeartBeat = new Runnable() {
