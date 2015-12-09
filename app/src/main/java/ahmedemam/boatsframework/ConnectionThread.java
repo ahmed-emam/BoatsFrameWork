@@ -27,6 +27,9 @@ import ahmedemam.boatsframework.model.Packet;
 
 /**
  * Created by ahmedemam on 12/2/15.
+ *
+ *
+ * NOT USING THIS THREAD RIGHT NOW
  */
 public class ConnectionThread extends Thread{
 

@@ -32,11 +32,15 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Iterator;
+import java.util.PriorityQueue;
 import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 
 import ahmedemam.boatsframework.model.Packet;
+import ahmedemam.boatsframework.model.Route;
 
 
 /**
@@ -83,18 +87,18 @@ public class MainActivity extends AppCompatActivity {
             "",
             ""
     };
-    Handler activitiesCommHandler;
+    //    Handler activitiesCommHandler;
     Handler timedTasks;
 
     //    static ConnectionThread[] connectionThreads = new ConnectionThread[MAX_CONNECTIONS];
-    static WorkingThread[] connectionThreads = new WorkingThread[MAX_CONNECTIONS];
 
+    static WorkingThread[] connectionThreads = new WorkingThread[MAX_CONNECTIONS];
+    static ConcurrentHashMap<Integer, PriorityQueue<Route>> routeTable = new ConcurrentHashMap<>(MAX_CONNECTIONS);
 
     public static int DEVICE_ID = 0;                                   //This device's ID
     private static FileOutputStream logfile;
     public static String rootDir = Environment.getExternalStorageDirectory().toString() + "/MobiBots/boatsFramework/";
     private WifiAdhocServerThread serverThread;
-//    private ConnectionThread otherConnection;
     public DatagramSocket broadcastSocket = null;
 
 
@@ -137,6 +141,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
+    /**
+     * TODO: Don't forget to change this to a static Handler to prevent memory leak
+     */
     public final Handler UIHandler = new Handler(){
         @Override
         public void handleMessage(Message msg) {
@@ -165,6 +172,76 @@ public class MainActivity extends AppCompatActivity {
     };
 
 
+
+    public synchronized WorkingThread getWorkingThread(int nodeID){
+        return connectionThreads[nodeID-1];
+    }
+    public synchronized void addRoute(int dest, Route route){
+        PriorityQueue<Route> associatedRoutes = routeTable.get(dest);
+        if(associatedRoutes == null){
+            PriorityQueue<Route> newEntry = new PriorityQueue<>();
+            newEntry.add(route);
+            routeTable.put(dest, newEntry);
+        }
+        else{
+            associatedRoutes.add(route);
+        }
+    }
+
+    public void printRoutingTable(){
+        Log.d(TAG, "Dest\t| Routes ");
+        String out = "";
+
+        for(Integer entry : routeTable.keySet()){
+            out += entry.intValue()+"\t| ";
+            PriorityQueue<Route> routes = routeTable.get(entry);
+            for(Route route : routes){
+                out += route+" | ";
+            }
+            out += "\n";
+        }
+        Log.d(TAG, out);
+
+    }
+
+    /**
+     * Remove all routes associated with the current node
+     * It will remove all routes where nodeID is the nextHop
+     * Also it will remove entry of nodeID from routingTable
+     * @param nodeID
+     */
+    public void removeRoutesAssociatedWithNode(int nodeID){
+        routeTable.remove(nodeID);
+
+        for(Integer entry : routeTable.keySet()){
+            PriorityQueue<Route> routes = routeTable.get(entry);
+            for(Route route : routes){
+                if(route.getNextHop() == nodeID)
+                    routes.remove(route);
+            }
+
+            if(routes.size() == 0){
+                Log.d(TAG, "Removed "+entry.intValue()+" from routing table");
+                routeTable.remove(entry);
+            }
+        }
+
+        Log.d(TAG, "Removed "+nodeID+" from routing table");
+    }
+
+    public synchronized int findRoute(int nodeID){
+        PriorityQueue<Route> routes = routeTable.get(nodeID);
+        if (routes != null) {
+            Route route = routes.peek();
+            if(route == null)
+                return -1;
+            int nextHop = route.getNextHop();
+//            debug("Packet to " + nodeID + " send it through " + nextHop);
+            Log.i(TAG, "Packet to " + nodeID + " send it through " + nextHop);
+            return nextHop;
+        }
+        return -1;
+    }
     /**
      * Create the log file
      */
@@ -196,8 +273,6 @@ public class MainActivity extends AppCompatActivity {
     public synchronized void removeNode(int node){
         debug("Disconnecting from "+node);
         try{
-
-
             if(alarmRingtone.isPlaying())
                 alarmRingtone.stop();
             alarmRingtone.play();
@@ -206,6 +281,7 @@ public class MainActivity extends AppCompatActivity {
         catch (Exception e){
             e.printStackTrace();
         }
+        removeRoutesAssociatedWithNode(node);
 
         connectionThreads[node-1] = null;
     }
@@ -236,7 +312,7 @@ public class MainActivity extends AppCompatActivity {
      * @param node      nodeID
      */
     public synchronized void addNode(WorkingThread thread,int node){
-        debug("Connecting to"+node);
+        debug("Connecting to "+node);
         try{
             Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
             Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), notification);
@@ -272,6 +348,7 @@ public class MainActivity extends AppCompatActivity {
     Runnable startAdvertising = new Runnable() {
         @Override
         public void run() {
+
             new WifiBroadcast_server().start();
             new WifiBroadcast_client().start();
         }
@@ -284,10 +361,106 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    /**
-     *
-     * @param savedInstanceState
-     */
+    Runnable changeRoutingTable = new Runnable() {
+        @Override
+        public void run() {
+            PriorityQueue<Route> queue = routeTable.get(9);
+            for(Route route : queue){
+                if(route.getNextHop() == 9)
+                    queue.remove(route);
+            }
+        }
+    };
+    Runnable startStreaming = new Runnable() {
+        @Override
+        public void run() {
+            connectionThreads[8].sendStream(9);
+        }
+    };
+    Runnable stopStreaming = new Runnable() {
+        @Override
+        public void run() {
+            connectionThreads[8].stopStream();
+        }
+    };
+
+    public void implementStaticRouting(){
+        switch (DEVICE_ID){
+            case 6:
+                //Reach node 7
+                PriorityQueue<Route> entry = new PriorityQueue<>();
+                entry.add(new Route(7, 1));
+                routeTable.put(7, entry);
+
+                //Reach node 8
+                entry = new PriorityQueue<>();
+                entry.add(new Route(7, 2));
+                routeTable.put(8, entry);
+
+                //Reach node 9
+                entry = new PriorityQueue<>();
+                entry.add(new Route(7, 3));
+                entry.add(new Route(9, 1));
+                routeTable.put(9, entry);
+                break;
+
+
+            case 7:
+                //Reach node 6
+                entry = new PriorityQueue<>();
+                entry.add(new Route(7, 1));
+                routeTable.put(6, entry);
+
+                //Reach node 8
+                entry = new PriorityQueue<>();
+                entry.add(new Route(8, 1));
+                routeTable.put(8, entry);
+
+                //Reach node 9
+                entry = new PriorityQueue<>();
+                entry.add(new Route(8, 2));
+                routeTable.put(9, entry);
+                break;
+
+
+            case 8:
+                //Reach node 6
+                entry = new PriorityQueue<>();
+                entry.add(new Route(7, 2));
+                routeTable.put(6, entry);
+
+                //Reach node 7
+                entry = new PriorityQueue<>();
+                entry.add(new Route(7, 1));
+                routeTable.put(7, entry);
+
+                //Reach node 9
+                entry = new PriorityQueue<>();
+                entry.add(new Route(9, 1));
+                routeTable.put(9, entry);
+                break;
+
+
+            case 9:
+                //Reach node 6
+                entry = new PriorityQueue<>();
+                entry.add(new Route(8, 3));
+                entry.add(new Route(6, 1));
+                routeTable.put(6, entry);
+
+                //Reach node 7
+                entry = new PriorityQueue<>();
+                entry.add(new Route(8, 2));
+                routeTable.put(7, entry);
+
+                //Reach node 8
+                entry = new PriorityQueue<>();
+                entry.add(new Route(8, 1));
+                routeTable.put(8, entry);
+                break;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -298,6 +471,7 @@ public class MainActivity extends AppCompatActivity {
 
         WifiManager wifiMgr = (WifiManager) getSystemService(WIFI_SERVICE);
         WifiInfo wifiInfo = wifiMgr.getConnectionInfo();
+
         if(checkIBSSMode()){
             debug("You are in IBSS mode");
         }
@@ -313,18 +487,26 @@ public class MainActivity extends AppCompatActivity {
 
             debug("NOT in IBSS mode");
         }
+
+
         DEVICE_ID = findDevice_Wifi(wifiInfo.getMacAddress());
 
         initLogging();
-        activitiesCommHandler = new Handler();
+        implementStaticRouting();
 
         timedTasks = new Handler();
+
         serverThread = new WifiAdhocServerThread(this);
         serverThread.start();
 
+        //Start Advertising after 5 seconds
+        timedTasks.postDelayed(startAdvertising, 5000);
 
-        timedTasks.postDelayed(startAdvertising, 10000);
-
+        if(DEVICE_ID == 6) {
+            timedTasks.postDelayed(startStreaming, (40000));
+            timedTasks.postDelayed(changeRoutingTable, (30000 * 2));
+            timedTasks.postDelayed(stopStreaming, (20000*4));
+        }
         TextView view = (TextView) findViewById(R.id.textView2);
         view.setMovementMethod(new ScrollingMovementMethod());
 
@@ -373,6 +555,7 @@ public class MainActivity extends AppCompatActivity {
         return false;
     }
 
+
     /**
      * Send file "filename" to device with device ID "device"
      *
@@ -400,9 +583,10 @@ public class MainActivity extends AppCompatActivity {
 
         ReadingThread readingThread = new ReadingThread(incomingPackets, inputStream, nodeID,
                 mainActivity);
-        WorkingThread workingThread = new WorkingThread(incomingPackets, outgoingPackets, nodeID,
-                mainActivity);
+
         WritingThread writingThread = new WritingThread(outgoingPackets, outputStream, nodeID);
+        WorkingThread workingThread = new WorkingThread(incomingPackets, outgoingPackets, nodeID,
+                mainActivity, writingThread);
 
         readingThread.start();
         workingThread.start();
@@ -507,7 +691,7 @@ public class MainActivity extends AppCompatActivity {
                 e.printStackTrace();
                 Log.e(TAG, e.getMessage());
             }
-            // TODO Start Receiving Messages
+
         }
     }
 

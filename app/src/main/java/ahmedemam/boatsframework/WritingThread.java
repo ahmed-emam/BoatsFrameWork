@@ -63,11 +63,15 @@ public class WritingThread extends Thread {
         while(threadIsAlive){
             try {
                 Packet outgoingPacket = outgoingPackets.take();
-                if(outgoingPacket.getType() == TERMINATE){
+                //if this is a terminate connection packet
+                //and I am the one who is intended to terminate
+                if(outgoingPacket.getType() == TERMINATE
+                        && outgoingPacket.getDestId() == MainActivity.DEVICE_ID){
 
                     cancel();
                 }
                 else{
+                    
                     ObjectOutput output = new ObjectOutputStream(outputStream);
                     output.writeObject(outgoingPacket);
                 }
@@ -101,7 +105,7 @@ public class WritingThread extends Thread {
     }
     public void cancel(){
 
-        debug("Closing Writing Thread", INFO);
+        debug("Closing Writing Thread of node "+deviceID, INFO);
         threadIsAlive = false;
         try {
             outputStream.close();

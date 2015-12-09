@@ -100,7 +100,7 @@ public class ReadingThread extends Thread{
     }
 
     public void cancel(){
-        debug("Closing Reading Thread", INFO);
+        debug("Closing Reading Thread of node "+deviceID, INFO);
         threadIsAlive = false;
         Packet packet = new Packet(deviceID, MainActivity.DEVICE_ID, TERMINATE, 0, new byte[1]);
         try {
@@ -114,6 +114,7 @@ public class ReadingThread extends Thread{
         } catch (IOException e) {
             e.printStackTrace();
         }
+
 
     }
 
