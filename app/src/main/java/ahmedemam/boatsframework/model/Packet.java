@@ -30,6 +30,10 @@ public class Packet implements Serializable {
         return sourceId;
     }
 
+    public int getLength() {
+        return length;
+    }
+
     public int getDestId() {
         return destId;
     }
@@ -57,6 +61,6 @@ public class Packet implements Serializable {
     @Override
     public String toString() {
         return "| "+this.sourceId+" | "+this.destId+" | "+this.type+
-                " | "+this.length+" bytes | "+this.payload;
+                " | "+this.length+" bytes | ";
     }
 }

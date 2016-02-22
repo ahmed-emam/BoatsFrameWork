@@ -1,5 +1,12 @@
 package ahmedemam.boatsframework;
 
+import android.Manifest;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.location.Criteria;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
@@ -9,6 +16,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Message;
+import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
@@ -32,7 +40,6 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.Iterator;
 import java.util.PriorityQueue;
 import java.util.Scanner;
 import java.util.concurrent.BlockingQueue;
@@ -52,7 +59,9 @@ public class MainActivity extends AppCompatActivity {
     public static String TAG = "boats_framework";
     public static final int  MAX_CONNECTIONS = 1024;
     MainActivity mainActivity;
-
+    public OutputStream commandCenterOutputStream;
+    private static FileOutputStream locationFile;
+    private Location currentLocation;
 
     public static final int TOAST_MSG = 0;
     public static final int TOAST_MSG_SHORT = 1;
@@ -92,12 +101,13 @@ public class MainActivity extends AppCompatActivity {
 
     //    static ConnectionThread[] connectionThreads = new ConnectionThread[MAX_CONNECTIONS];
 
-    static WorkingThread[] connectionThreads = new WorkingThread[MAX_CONNECTIONS];
+    static WorkerThread[] connectionThreads = new WorkerThread[MAX_CONNECTIONS];
     static ConcurrentHashMap<Integer, PriorityQueue<Route>> routeTable = new ConcurrentHashMap<>(MAX_CONNECTIONS);
 
     public static int DEVICE_ID = 0;                                   //This device's ID
     private static FileOutputStream logfile;
-    public static String rootDir = Environment.getExternalStorageDirectory().toString() + "/MobiBots/boatsFramework/";
+    private static FileOutputStream packetlogfile;
+    public static String rootDir = Environment.getExternalStorageDirectory().toString() + "/MobiBots/boatsFramework/tcp/";
     private WifiAdhocServerThread serverThread;
     public DatagramSocket broadcastSocket = null;
 
@@ -124,6 +134,48 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         return -1;
+    }
+
+    public synchronized String getTimeStamp() {
+        return (new SimpleDateFormat("yyyy/MM/dd HH:mm:ss.SSS").format(new Date()));
+    }
+
+    /**
+     * Function that write 'message' to the log file
+     * @param message
+     */
+    public synchronized void logLocation(String message) {
+        StringBuilder log_message = new StringBuilder(26 + message.length());
+        log_message.append(getTimeStamp());
+        log_message.append(": ");
+        log_message.append(message);
+        log_message.append("\n");
+
+        try {
+            locationFile.write(log_message.toString().getBytes());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    /**
+     * Function that write 'message' to the log file
+     * @param message
+     */
+    public synchronized void log(String message) {
+        StringBuilder log_message = new StringBuilder(26 + message.length());
+        log_message.append(getTimeStamp());
+        log_message.append(": ");
+        log_message.append(message);
+        log_message.append("\n");
+
+        try {
+            logfile.write(log_message.toString().getBytes());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
     }
     /**
      * Print out debug messages if "D" (debug mode) is enabled
@@ -173,7 +225,7 @@ public class MainActivity extends AppCompatActivity {
 
 
 
-    public synchronized WorkingThread getWorkingThread(int nodeID){
+    public synchronized WorkerThread getWorkingThread(int nodeID){
         return connectionThreads[nodeID-1];
     }
     public synchronized void addRoute(int dest, Route route){
@@ -188,9 +240,9 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public void printRoutingTable(){
-        Log.d(TAG, "Dest\t| Routes ");
-        String out = "";
+    public String printRoutingTable(){
+//        Log.d(TAG, "Dest\t| Routes ");
+        String out = "Dest\t| Routes\n";
 
         for(Integer entry : routeTable.keySet()){
             out += entry.intValue()+"\t| ";
@@ -201,7 +253,20 @@ public class MainActivity extends AppCompatActivity {
             out += "\n";
         }
         Log.d(TAG, out);
+        return out;
+    }
+    public void removeRoute(int nodeID, int nextHop){
+        PriorityQueue<Route> routes = routeTable.get(nodeID);
+        if(routes != null){
+            for(Route route : routes){
+                if(route.getNextHop() == nextHop)
+                    routes.remove(route);
+            }
 
+            if(routes.size() == 0){
+                routeTable.remove(nodeID);
+            }
+        }
     }
 
     /**
@@ -252,13 +317,45 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG, "failed to create directory");
             }
         }
+        String dir_timeStamp = new SimpleDateFormat("yyyy_MM_dd").format(new Date());
+
+        mediaStorageDir = new File(rootDir  + dir_timeStamp);
+        if (!mediaStorageDir.exists()) {
+            if (!mediaStorageDir.mkdirs()) {
+                Log.d(TAG, "failed to create directory");
+            }
+        }
+
+
+
+
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HH:mm:ss").format(new Date());
-        File file = new File(rootDir + "Device_" +DEVICE_ID + "_" +timeStamp + ".txt");
+        File file = new File(rootDir  + dir_timeStamp + "/" + "Device_" +DEVICE_ID + "_" +timeStamp + ".txt");
 
         Log.d(TAG, file.getPath());
         try {
             file.createNewFile();
             logfile = new FileOutputStream(file);
+
+            file = new File(rootDir  + dir_timeStamp+ "/" + "location.txt");
+            if (!file.exists())
+                file.createNewFile();
+            locationFile = new FileOutputStream(file, true);
+
+
+            file = new File(rootDir  + dir_timeStamp + "/" + "packets_device_" +DEVICE_ID + "_" +timeStamp);
+            if (!file.exists()) {
+                file.createNewFile();
+                packetlogfile = new FileOutputStream(file, true);
+                String header = "Time\t\tSource_IP\tDestination_IP\tSource\tDestination\tpacket_size\tpacket_type\n";
+                packetlogfile.write(header.getBytes());
+
+            }
+            else
+                packetlogfile = new FileOutputStream(file, true);
+
+
+
 
         } catch (IOException e) {
             e.printStackTrace();
@@ -272,6 +369,7 @@ public class MainActivity extends AppCompatActivity {
      */
     public synchronized void removeNode(int node){
         debug("Disconnecting from "+node);
+        log("Disconnecting from "+node);
         try{
             if(alarmRingtone.isPlaying())
                 alarmRingtone.stop();
@@ -281,7 +379,7 @@ public class MainActivity extends AppCompatActivity {
         catch (Exception e){
             e.printStackTrace();
         }
-        removeRoutesAssociatedWithNode(node);
+//        removeRoutesAssociatedWithNode(node);
 
         connectionThreads[node-1] = null;
     }
@@ -311,8 +409,9 @@ public class MainActivity extends AppCompatActivity {
      * @param thread    Communication thread
      * @param node      nodeID
      */
-    public synchronized void addNode(WorkingThread thread,int node){
-        debug("Connecting to "+node);
+    public synchronized void addNode(WorkerThread thread,int node){
+        debug("Connected to "+node);
+        log("Connected to "+node);
         try{
             Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
             Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), notification);
@@ -322,6 +421,7 @@ public class MainActivity extends AppCompatActivity {
         catch (Exception e){
             e.printStackTrace();
         }
+//        addRoute(node, new Route(node, 1));
         connectionThreads[node-1] = thread;
     }
 
@@ -384,13 +484,16 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    /**
+     * 7 -> 8 -> 9
+     */
     public void implementStaticRouting(){
         switch (DEVICE_ID){
             case 6:
                 //Reach node 7
                 PriorityQueue<Route> entry = new PriorityQueue<>();
-                entry.add(new Route(7, 1));
-                routeTable.put(7, entry);
+//                entry.add(new Route(7, 1));
+//                routeTable.put(7, entry);
 
                 //Reach node 8
                 entry = new PriorityQueue<>();
@@ -400,16 +503,16 @@ public class MainActivity extends AppCompatActivity {
                 //Reach node 9
                 entry = new PriorityQueue<>();
                 entry.add(new Route(7, 3));
-                entry.add(new Route(9, 1));
+//                entry.add(new Route(9, 1));
                 routeTable.put(9, entry);
                 break;
 
 
             case 7:
                 //Reach node 6
-                entry = new PriorityQueue<>();
-                entry.add(new Route(7, 1));
-                routeTable.put(6, entry);
+//                entry = new PriorityQueue<>();
+//                entry.add(new Route(7, 1));
+//                routeTable.put(6, entry);
 
                 //Reach node 8
                 entry = new PriorityQueue<>();
@@ -419,15 +522,16 @@ public class MainActivity extends AppCompatActivity {
                 //Reach node 9
                 entry = new PriorityQueue<>();
                 entry.add(new Route(8, 2));
+//                entry.add(new Route(9, 1));
                 routeTable.put(9, entry);
                 break;
 
 
             case 8:
                 //Reach node 6
-                entry = new PriorityQueue<>();
-                entry.add(new Route(7, 2));
-                routeTable.put(6, entry);
+//                entry = new PriorityQueue<>();
+//                entry.add(new Route(7, 2));
+//                routeTable.put(6, entry);
 
                 //Reach node 7
                 entry = new PriorityQueue<>();
@@ -443,10 +547,10 @@ public class MainActivity extends AppCompatActivity {
 
             case 9:
                 //Reach node 6
-                entry = new PriorityQueue<>();
-                entry.add(new Route(8, 3));
-                entry.add(new Route(6, 1));
-                routeTable.put(6, entry);
+//                entry = new PriorityQueue<>();
+//                entry.add(new Route(8, 3));
+////                entry.add(new Route(6, 1));
+//                routeTable.put(6, entry);
 
                 //Reach node 7
                 entry = new PriorityQueue<>();
@@ -465,12 +569,19 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+
+
         mainActivity = this;
         alarmRingtone = RingtoneManager.getRingtone(this,
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM));
 
         WifiManager wifiMgr = (WifiManager) getSystemService(WIFI_SERVICE);
         WifiInfo wifiInfo = wifiMgr.getConnectionInfo();
+
+        DEVICE_ID = findDevice_Wifi(wifiInfo.getMacAddress());
+
+        initLogging();
 
         if(checkIBSSMode()){
             debug("You are in IBSS mode");
@@ -486,12 +597,15 @@ public class MainActivity extends AppCompatActivity {
             }
 
             debug("NOT in IBSS mode");
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            finish();
         }
 
 
-        DEVICE_ID = findDevice_Wifi(wifiInfo.getMacAddress());
-
-        initLogging();
         implementStaticRouting();
 
         timedTasks = new Handler();
@@ -502,11 +616,14 @@ public class MainActivity extends AppCompatActivity {
         //Start Advertising after 5 seconds
         timedTasks.postDelayed(startAdvertising, 5000);
 
-        if(DEVICE_ID == 6) {
-            timedTasks.postDelayed(startStreaming, (40000));
-            timedTasks.postDelayed(changeRoutingTable, (30000 * 2));
-            timedTasks.postDelayed(stopStreaming, (20000*4));
-        }
+
+        new CommandsThread().start();
+
+//        if(DEVICE_ID == 7) {
+//            timedTasks.postDelayed(startStreaming, (40000));
+//            timedTasks.postDelayed(changeRoutingTable, (30000 * 2));
+//            timedTasks.postDelayed(stopStreaming, (20000*4));
+//        }
         TextView view = (TextView) findViewById(R.id.textView2);
         view.setMovementMethod(new ScrollingMovementMethod());
 
@@ -516,6 +633,92 @@ public class MainActivity extends AppCompatActivity {
 //            clientThread.start();
 //        }
     }
+
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        // Hook up to the GPS system
+        LocationManager gps = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        Criteria c = new Criteria();
+        c.setAccuracy(Criteria.ACCURACY_FINE);
+        c.setPowerRequirement(Criteria.NO_REQUIREMENT);
+        String provider = gps.getBestProvider(c, false);
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+        gps.requestLocationUpdates(provider, 0, 0, locationListener);
+    }
+
+    /**
+     * Handles GPS updates by calling the appropriate update.
+     */
+    private LocationListener locationListener = new LocationListener() {
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+
+            String a = String.format("onStatusChanged: provider = %s, status= %d", provider, status);
+            Log.w(TAG, a);
+        }
+
+        public void onProviderEnabled(String provider) {
+            Log.w(TAG, "onProviderEnabled");
+        }
+
+        public void onProviderDisabled(String provider) {
+        }
+
+        public void onLocationChanged(Location location) {
+// Convert from lat/long to UTM coordinates
+            debug("Current Location: " + location);
+            String out = "";
+            out += location.getLatitude() + "\t" + location.getLongitude() + "\t" + location.getAltitude();
+
+            if(location.hasSpeed())
+                out += "\t" + location.getSpeed();
+            else
+                out += "\t0.0";
+
+            if(location.hasBearing())
+                out += "\t" + location.getBearing();
+            else
+                out += "\t0.0";
+
+            currentLocation = location;
+
+            logLocation(out);
+
+
+        }
+    };
+
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // Disconnect from GPS updates
+        LocationManager gps;
+        gps = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
+            return;
+        }
+        gps.removeUpdates(locationListener);
+
+    }
+
 
     /**
      * This is a hack to check if IBSS mode is enabled or not
@@ -574,10 +777,239 @@ public class MainActivity extends AppCompatActivity {
 
     }
 
+    Runnable printRoutingTable = new Runnable() {
+        @Override
+        public void run() {
+            sendToCommandCenter(printRoutingTable());
+            timedTasks.postDelayed(this, 2000);
+        }
+    };
+
+    public void sendToCommandCenter(String msg){
+        if(commandCenterOutputStream != null)
+            try {
+                commandCenterOutputStream.write((msg + "\n\r").getBytes());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+    }
+
+
+    private class SendFileRunnable implements Runnable{
+        int nodeID;
+        public SendFileRunnable(int nodeID){
+            this.nodeID = nodeID;
+        }
+        @Override
+        public void run() {
+            int nextHop = findRoute(nodeID);
+            debug("Sending file to "+nodeID+" via "+nextHop);
+            if(nextHop != -1) {
+                WorkerThread thread = mainActivity.getWorkingThread(nextHop);
+                if(thread != null){
+                    thread.sendFile(nodeID, "5MB");
+                }
+            }
+        }
+    }
+
+    public class CommandsThread extends Thread{
+
+        ServerSocket serverSocket = null;
+        boolean serverOn = true;
+        Socket client = null;
+
+        public CommandsThread() {
+
+            try {
+                serverSocket = new ServerSocket(8888);
+            }
+            catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        public void writeInstructions(OutputStream outputStream){
+            String out = "\t\t*****WELCOME to the command center for Scenario 2 Experiment*****\n" +
+                    "Usage: <command>\n" +
+                    "command\tDescription\n" +
+                    "send <NodeID> <Filename>\tSend <Filename> to <NodeID>\n" +
+                    "remove <DestID> <NextHop>\tRemove route (DestID, NextHop) from routing table\n" +
+                    "\n\r";
+            try {
+                outputStream.write(out.getBytes());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void run() {
+            timedTasks.postDelayed(printRoutingTable, 2000);
+            while(serverOn){
+                try {
+                    client = serverSocket.accept();
+                    Log.d(TAG, "Connected to: " + client.getInetAddress().getHostAddress());
+                    Log.d(TAG, "Connected to Local Address: " + client.getLocalAddress().getHostAddress());
+
+
+                    commandCenterOutputStream= client.getOutputStream();
+                    writeInstructions(commandCenterOutputStream);
+
+                    InputStream inputStream = client.getInputStream();
+                    int len;
+                    byte[] buf = new byte[1024];
+                    commandCenterOutputStream.write("Type in your command: ".getBytes());
+                    while((len = inputStream.read(buf)) > 0){
+                        String newCommand = new String(buf, 0, len);
+                        Log.d(TAG, "COMMAND: "+newCommand);
+                        sendToCommandCenter("Your command was: "+newCommand);
+                        Scanner lineScanner = new Scanner(newCommand);
+
+                        if(newCommand.contains("send")){
+                            lineScanner.next();
+                            if(lineScanner.hasNextInt()) {
+                                int node = lineScanner.nextInt();
+//                            lineScanner.next();
+                                SendFileRunnable sendFile = new SendFileRunnable(node);
+                                Thread thread = new Thread(sendFile);
+                                thread.start();
+                            }
+                            else{
+                                sendToCommandCenter("Invalid command");
+                                lineScanner.nextLine();
+                            }
+
+                        }
+
+                        else if(newCommand.contains("remove")){
+                            lineScanner.next();
+                            if(!lineScanner.hasNextInt())
+                            {
+                                sendToCommandCenter("You didn't type in a destination node and nextHop");
+                                continue;
+                            }
+                            int destNode = lineScanner.nextInt();
+                            if(!lineScanner.hasNextInt())
+                            {
+                                sendToCommandCenter("You didn't type in a destination node");
+                                continue;
+                            }
+                            int nextHop = lineScanner.nextInt();
+                            removeRoute(destNode, nextHop);
+                        }
+
+                        else if(newCommand.contains("add")){
+                            lineScanner.next();
+                            if(!lineScanner.hasNextInt())
+                            {
+                                sendToCommandCenter("add <DestID> <NextHop> <cost>");
+                                continue;
+                            }
+                            int destNode = lineScanner.nextInt();
+                            if(!lineScanner.hasNextInt())
+                            {
+                                sendToCommandCenter("You didn't type in a nextHop and cost");
+                                continue;
+                            }
+                            int nextHop = lineScanner.nextInt();
+                            int cost = lineScanner.nextInt();
+                            addRoute(destNode, new Route(nextHop, cost));
+                        }
+                        else if(newCommand.contains("rm")){
+                            File f = new File((MainActivity.rootDir + "File/" +"5MB"));
+
+                            if(f.exists()) {
+                                log("File size before deleting: "+f.length());
+                                f.delete();
+                                sendToCommandCenter(MainActivity.rootDir + "File/5MB" + " has successfully been deleted");
+                            }
+                        }
+                        else if(newCommand.contains("del")){
+                            lineScanner.next();
+                            if(lineScanner.hasNextInt()) {
+                                int node = lineScanner.nextInt();
+//                            lineScanner.next();
+                                int nextHop = findRoute(node);
+                                debug("Sending DELETE Packet to "+node+" via "+nextHop);
+                                if(nextHop != -1) {
+                                    WorkerThread thread = mainActivity.getWorkingThread(nextHop);
+                                    if(thread != null){
+                                        thread.sendDeletePacket(node);
+                                    }
+                                }
+                            }
+                            else{
+                                sendToCommandCenter("Invalid command");
+                                lineScanner.nextLine();
+                            }
+                        }
+//                        if(newCommand.contains("new")){
+//                            lineScanner.next();
+//                            int distance = lineScanner.nextInt();
+//                            new_Experiment(distance);
+//                        }
+//                        else if(newCommand.contains("tput")){
+//                            lineScanner.nextLine();
+//                            if(Distance == -1){
+//                                commandCenterOutputStream.write("Please type new <Distance> first\n\r".getBytes());
+//                            }else {
+//
+//                                commandCenterOutputStream.write(("Running tput for " + (Distance) + " meters\n\r").getBytes());
+//                                calc_throughput();
+//                            }
+//                        }
+//                        else if(newCommand.contains("loss")){
+//                            lineScanner.nextLine();
+//                            if(Distance == -1){
+//                                commandCenterOutputStream.write("Please type new <Distance> first\n\r".getBytes());
+//                            }else {
+//                                commandCenterOutputStream.write(("Running packet loss for " + (Distance) + " meters\n\r").getBytes());
+//                                packet_loss();
+//                            }
+//                        }
+//                        else if(newCommand.contains("rtt")){
+//                            lineScanner.nextLine();
+//                            if(Distance == -1){
+//                                commandCenterOutputStream.write("Please type new <Distance> first\n\r".getBytes());
+//                            }else {
+//                                commandCenterOutputStream.write(("Running rtt for " + (Distance) + " meters\n\r").getBytes());
+//                                RTT();
+//                            }
+//                        }
+                        else{
+                            debug("Invalid command");
+                            commandCenterOutputStream.write((lineScanner.nextLine() +
+                                    "\tNOT SUPPORTED\n\r").getBytes());
+                        }
+
+                        commandCenterOutputStream.write("Type in your command: ".getBytes());
+                    }
+                }catch(IOException e){
+                    cancel();
+                    e.printStackTrace();
+                }
+            }
+        }
+
+
+        public void cancel(){
+            try {
+                serverOn = false;
+                serverSocket.close();
+                if(client!=null)
+                    client.close();
+
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
 
     public void startCommunicationThreads(int nodeID, boolean client,
                                           InputStream inputStream, OutputStream outputStream,
                                           MainActivity mainActivity){
+
+
         BlockingQueue<Packet> incomingPackets = new LinkedBlockingQueue<>();
         BlockingQueue<Packet> outgoingPackets = new LinkedBlockingQueue<>();
 
@@ -585,14 +1017,15 @@ public class MainActivity extends AppCompatActivity {
                 mainActivity);
 
         WritingThread writingThread = new WritingThread(outgoingPackets, outputStream, nodeID);
-        WorkingThread workingThread = new WorkingThread(incomingPackets, outgoingPackets, nodeID,
+        WorkerThread workerThread = new WorkerThread(incomingPackets, outgoingPackets, nodeID,
                 mainActivity, writingThread);
 
         readingThread.start();
-        workingThread.start();
+        workerThread.start();
         writingThread.start();
 
-        addNode(workingThread, nodeID);
+
+        addNode(workerThread, nodeID);
     }
 
 
@@ -623,7 +1056,10 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "Connected to: " + client.getInetAddress().getHostAddress());
                     Log.d(TAG, "Connected to Local Address: " + client.getLocalAddress().getHostAddress());
 
+
                     int deviceId = findDevice_IpAddress(client.getInetAddress().getHostAddress());
+
+                    debug("SERVER Connected to "+deviceId+" "+client.getInetAddress().getHostAddress());
                     startCommunicationThreads(deviceId, true,
                             client.getInputStream(), client.getOutputStream(), mainActivity);
 
@@ -647,6 +1083,7 @@ public class MainActivity extends AppCompatActivity {
         for(int i = 0; i < connectionThreads.length; i++){
             if(connectionThreads[i] != null){
                 debug("Connected to "+(i+1));
+                sendToCommandCenter("Connected to "+(i+1));
             }
         }
     }
@@ -678,7 +1115,10 @@ public class MainActivity extends AppCompatActivity {
                 device_Id = findDevice_IpAddress(hostAddress);
                 debug("Connecting to " + device_Id + " @ " + hostAddress);
                 socket.bind(null);
-                socket.connect((new InetSocketAddress(hostAddress, port)), 5000);
+                socket.connect((new InetSocketAddress(hostAddress, port)), 500);
+
+                debug("[CLIENT] Connected to "+device_Id+" "+hostAddress);
+
                 startCommunicationThreads(device_Id, true,
                         socket.getInputStream(), socket.getOutputStream(), mainActivity);
 
@@ -767,8 +1207,10 @@ public class MainActivity extends AppCompatActivity {
                     int deviceID = stringScanner.nextInt();
                     if(deviceID!=DEVICE_ID) {
                         debug("Found device " + deviceID);
-                        if(connectionThreads[deviceID-1] == null){
-                            new WifiAdhocClientThread(device_ip_adresses[deviceID-1]).start();
+                        if(deviceID > DEVICE_ID) {
+                            if (connectionThreads[deviceID - 1] == null) {
+                                new WifiAdhocClientThread(device_ip_adresses[deviceID - 1]).start();
+                            }
                         }
                     }
                 }
